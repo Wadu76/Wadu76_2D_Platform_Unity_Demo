@@ -1,0 +1,32 @@
+# ===== Unity 自动生成,不要提交 =====
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]serSettings/
+[Uu]serLibrary/
+[Ll]ocal[Ll]ow/
+[Pp]roject[Gg]utter/
+[Gg]radle/
+[Nn]ativeAndroid/
+[Nn]ativeiOS/
+crashlytics-build.properties
+
+# ===== IDE / 编辑器个人配置 =====
+.vs/
+.vscode/
+.idea/
+*.csproj
+*.sln
+*.user
+*.userprefs
+*.unityproj
+*.booproj
+*.suo
+
+# ===== 内部 AI / 交接文档(不想公开) =====
+docs/superpowers/
+HANDOFF*.md
+INTERVIEW_PREP.md
