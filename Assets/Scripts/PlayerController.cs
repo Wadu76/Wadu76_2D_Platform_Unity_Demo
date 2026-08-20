@@ -39,6 +39,7 @@ public class PlayerController : MonoBehaviour
     public float groundCheckRadius = 0.2f;
 
     public LayerMask groundLayer;
+    //public LayerMask[] groundLayers;
 
     //dash手感参数
     [Header("Dash")]
@@ -72,6 +73,8 @@ public class PlayerController : MonoBehaviour
     private float dashCooldownTimer;
     private Vector3 baseScale;
     private GhostTrail ghost;
+    //为引用可穿越平台的下落时间
+    private PlatformPenetration platformPenetration;
 
 
     void Start()
@@ -81,7 +84,9 @@ public class PlayerController : MonoBehaviour
         sr = GetComponentInChildren<SpriteRenderer>();
         anim = GetComponentInChildren<Animator>();
         ghost = GetComponentInChildren<GhostTrail>();
+        platformPenetration = GetComponent<PlatformPenetration>();
         baseScale = visual.localScale;
+
     }
 
     void Update()
@@ -89,9 +94,19 @@ public class PlayerController : MonoBehaviour
         OptimizedInput();
         if (Input.GetButtonDown("Jump"))
         {
-            //jumpPressed = true;
-            //跳到空中（也可能没在空中就开始计时器）
-            jumpBufferTimer = jumpBufferTime;   //按了跳就重置计时器
+            //S+空格下穿平台，不进入跳跃缓冲，让身体下去
+            if (Input.GetKey(KeyCode.S))
+            {
+
+                platformPenetration.DropThrough();
+            }
+            else
+            {
+                //jumpPressed = true;
+                //跳到空中（也可能没在空中就开始计时器）
+                jumpBufferTimer = jumpBufferTime;   //按了跳就重置计时器
+            }
+
         }
         jumpBufferTimer -= Time.deltaTime;
         //update中获取跳跃输入
@@ -133,6 +148,8 @@ public class PlayerController : MonoBehaviour
         {
             rb.gravityScale = baseGravity;  //其余时间正常
         }
+
+
         //check if we're on the fround
         isGrounded = Physics2D.OverlapCircle(groundCheck.position, groundCheckRadius, groundLayer);
 
