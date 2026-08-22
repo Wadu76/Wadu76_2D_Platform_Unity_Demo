@@ -1,7 +1,8 @@
+using System;
 using System.Collections;
 using UnityEngine;
 
-enum PlayerState { Ground, Jump, Fall, Dash }
+enum PlayerState { Ground, Jump, Fall, Dash, WallSlide, WallJump }
 
 public class PlayerController : MonoBehaviour
 {
@@ -11,6 +12,8 @@ public class PlayerController : MonoBehaviour
     private Animator anim;
     public float moveSpeed = 5f;
     public float jumpForce = 10f;
+
+    [SerializeField] public Transform visual;
 
     [Header("跳跃缓冲")]
     public float coyoteTime = 0.1f;        //土狼时间计时：离开地面可以继续跳（后输入） 0.1s == 6fps
@@ -33,6 +36,10 @@ public class PlayerController : MonoBehaviour
     //地面检测点
     [SerializeField]
     public Transform groundCheck;
+    [SerializeField]
+    private Transform wallCheckLeft;
+    [SerializeField]
+    private Transform wallCheckRight;
 
     public float groundCheckRadius = 0.2f;
 
@@ -50,14 +57,24 @@ public class PlayerController : MonoBehaviour
     public float dashIFrame = 0.3f;     //无敌时长，默认和dash时长一致
     public bool dashBlink = true;      //无敌期间闪烁提示
 
+    [Header("滑墙&墙跳")]
+    [SerializeField] private float wallJumpGraceTime = 0.12f;       //松朝向键后，墙跳还能跳的时长（缓冲
+    [SerializeField] private float wallCheckDist = 0.25f;   //墙检测射线长度
+    [SerializeField] private float wallSlideMaxFall = -2f;  //墙滑下落速度上限
+    [SerializeField] private float wallSlideGravity = 0.4f; //墙滑时的重力缩放（在UpdateGravity里调整）
+    [SerializeField] private float wallJumpSpeed = 12f;     //墙跳水平速度
+    [SerializeField] private float wallJumpForceTime = 0.16f;   //墙跳强制移动窗口(期间忽视其他输入)
+    [SerializeField] private LayerMask wallMask;    //检测墙层，platform/ground？
+
+
     private bool dashPressed;   //Update里面采集判断要不要dash，一帧一次
-    private float invincibleTimer;
+
     private float stateTime;    //当前状态计时（目前主要针对dash）
 
     public bool IsInvincible => isInvincible;
 
     //为了Visual独立
-    public Transform visual;
+
 
     private Rigidbody2D rb;
     private bool isGrounded;
@@ -66,6 +83,9 @@ public class PlayerController : MonoBehaviour
     //jumping buffer timers
     private float coyoteTimer;      //土狼时间剩余
     private float jumpBufferTimer;  //缓冲剩余
+    private float invincibleTimer;
+    private float wallJumpForceTimer;   //墙跳强制移动剩余时间（计时器）
+    private float wallJumpGraceTimer;   //
     //public float moveX;
 
     //dash状态
@@ -77,6 +97,10 @@ public class PlayerController : MonoBehaviour
     private GhostTrail ghost;
     //为引用可穿越平台的下落时间
     private PlatformPenetration platformPenetration;
+    //墙状态（跳&滑）
+    private int wallSlide;      //哪一侧有墙：-1左/+1右/0无
+    private int wallJumpDir;    //墙跳弹离方向（= -wallSlide）
+    private int lastWallSide;   //离开的最后一个墙的方向 -1 or 1
 
 
     void Start()
@@ -143,6 +167,17 @@ public class PlayerController : MonoBehaviour
         if (isGrounded) coyoteTimer = coyoteTime;
         else coyoteTimer -= Time.deltaTime;
 
+        //维护墙跳宽容,上墙充满缓冲时间，离墙才开始减
+        if (currentState == PlayerState.WallSlide)
+        {
+            lastWallSide = wallSlide;
+            wallJumpGraceTimer = wallJumpGraceTime;
+        }
+        else
+        {
+            wallJumpGraceTimer -= Time.deltaTime;
+        }
+
         if (!TryStartDash()) TryStartJump();
 
         switch (currentState)
@@ -151,14 +186,20 @@ public class PlayerController : MonoBehaviour
             case PlayerState.Jump: UpdateJump(); break;
             case PlayerState.Fall: UpdateFall(); break;
             case PlayerState.Dash: UpdateDash(); break;
+            case PlayerState.WallSlide: UpdateWallSlide(); break;
+            case PlayerState.WallJump: UpdateWallJump(); break;
+
         }
 
         //jumpPressed = false;
         anim.SetBool("IsGrounded", isGrounded);
         anim.SetFloat("VelocityY", rb.velocity.y);
         anim.SetBool("IsDashing", currentState == PlayerState.Dash);
+        anim.SetBool("IsWallSliding", currentState == PlayerState.WallSlide);
     }
 
+
+    //输入优化，防转向动画卡顿
     void OptimizedInput()
     {
         // 按下：谁后按谁生效（"最后按下的键优先"）
@@ -175,8 +216,18 @@ public class PlayerController : MonoBehaviour
             horizontalMoveLastFrame = Input.GetKey(KeyCode.A) ? -1 : 0;
     }
 
+
+    //切换角色朝向，包括墙上的方向
     void UpdateCharacterFacing(float horizontalMoveLastFrame)
     {
+        if (currentState == PlayerState.WallSlide && wallSlide != 0)
+        {
+            //墙在右边就反转（原图朝左）
+            sr.flipX = wallSlide == -1;
+            anim.SetFloat("Speed", 0f);
+            return;
+        }
+        //若不在墙上就专注于地上行走
         float moveX = horizontalMoveLastFrame;
         if (moveX != 0)
         {
@@ -199,31 +250,7 @@ public class PlayerController : MonoBehaviour
         return input.normalized;    //不放大斜向速度
     }
 
-    IEnumerator DashRoutine()
-    {
-        isDashing = true;
-        isInvincible = true;
-        dashCooldownTimer = dashCooldown;
-        dashDirection = GetDashDirection();
-        anim.SetBool("IsDashing", true);
-
-        //并行启动特效
-        StartCoroutine(StretchRoutine());
-        StartCoroutine(GhostRoutine());
-        StartCoroutine(BlinkRoutine());
-
-        yield return new WaitForSeconds(dashTime);
-
-        isDashing = false;
-        anim.SetBool("IsDashing", false);
-
-        //无敌到dashIFrame
-        yield return new WaitForSeconds(Mathf.Max(0f, dashIFrame - dashTime));
-        isInvincible = false;
-    }
-
-
-    //拉伸残影
+    //拉伸dash残影
     IEnumerator StretchRoutine()
     {
         //拉伸部分，占dash的30%
@@ -286,29 +313,44 @@ k);
         sr.enabled = true;
     }
 
+
+    //每fixed帧更新玩家重量：dash/jump上升/fall下落时/上升变重力
+    //扒在墙上也改变重力（慢慢滑下来）
     private void UpdateGravity()
     {
+
         //更新重力
-        //dash重力优先于其他重力逻辑
+        //dash重力优先于其他重力逻辑/包括wallslide
         if (currentState == PlayerState.Dash)
         {
             rb.gravityScale = dashGravity;
         }
-        //定这一帧的重力
+
+        else if (currentState == PlayerState.WallSlide)
+        {
+            rb.gravityScale = wallSlideGravity;
+        }
+
+        //dash、墙落以外定这一帧的重力
+        //下落中
         else if (rb.velocity.y < 0f)
         {
             rb.gravityScale = baseGravity * fallMutiplier;    //下落：加倍
         }
+        //上升中且没按住空格，加大重力使其快速落
         else if (rb.velocity.y > 0f && !jumpHeld)
         {
             rb.gravityScale = baseGravity * jumpCutMultiplier; //上升时松开空格，猛增重力剪短上升过程
         }
+        //按住空格就不变
         else
         {
             rb.gravityScale = baseGravity;  //其余时间正常
         }
     }
 
+
+    //每帧优先检测dash的函数，判断是否要dash并切换状态
     private bool TryStartDash()
     {
         //在此消耗update搜集的dashPressed
@@ -325,17 +367,51 @@ k);
         return false;
     }
 
+    //尝试是否要jump了，并切换状态
+    //现在加上wallJump
     private bool TryStartJump()
     {
+
+        if (jumpBufferTimer <= 0f) return false;
+        if (currentState == PlayerState.Dash) return false;  //dash的时候跳不了
         //jump与jumpbuffer和cotyoteTimer绑定，每次跳了后面会清0，因此靠这两判断能否跳
         //当然dash过程无法切换到jump，要先”落地“才行
-        if (jumpBufferTimer > 0f && (isGrounded || coyoteTimer > 0f) && currentState != PlayerState.Dash)
+        //地面/土狼跳的时候的跳（贴墙的时候不触及这里的逻辑）
+        //不需要jumpBufferTimer的判断吗？对，上面判断jumpBufferTimer不为正就直接返回false了
+
+        //第一种情况，上面排除不能跳和dash的时候，地面/土狼跳的时候跳
+        if (currentState != PlayerState.WallSlide && (isGrounded || coyoteTimer > 0f))
         {
             //类比上面的tryDash
             ChangeState(PlayerState.Jump);
             return true;
         }
-        return false;
+
+        //第二种情况，墙跳：相邻有墙，按着朝墙方向才让跳
+        wallSlide = GetWallSlide();
+        //中间变量记录上次的wallSlide防止被消耗
+        int side = wallSlide != 0 ? wallSlide : lastWallSide;
+        if (side != 0 && (horizontalMoveLastFrame == side || wallJumpGraceTimer > 0f))
+        //if (wallSlide != 0)
+        {
+            //朝着扒墙的反方向跳出去
+            wallJumpDir = -side;
+            wallJumpGraceTimer = 0f;    //消耗缓冲时间，防止连跳
+            ChangeState(PlayerState.WallJump);
+            return true;
+        }
+        return false;       //都不满足，buffer留着，后续帧满足在消费（在UpdateJump等里面）
+    }
+
+    //检测墙在哪里，用的地方给wallSile参数赋值 -1在左 1在右 0表没有
+    private int GetWallSlide()
+    {
+        //在左边
+        if (Physics2D.Raycast(wallCheckLeft.position, Vector2.left, wallCheckDist, wallMask)) return -1;
+        //在右边
+        if (Physics2D.Raycast(wallCheckRight.position, Vector2.right, wallCheckDist, wallMask)) return 1;
+        //都没有
+        return 0;
     }
 
     // 用于把目前的PlayerState切到next
@@ -368,8 +444,18 @@ k);
             StartCoroutine(GhostRoutine());
             StartCoroutine(BlinkRoutine());
         }
+        //
+        else if (next == PlayerState.WallJump)
+        {
+            rb.velocity = new Vector2(wallJumpDir * wallJumpSpeed, jumpForce);
+            jumpBufferTimer = 0f;   //消耗缓冲
+            coyoteTimer = 0f;       //消耗土狼
+            wallJumpForceTimer = wallJumpForceTime;
+        }
     }
 
+
+    //更新地面速度，若是离地就切换到fall状态
     private void UpdateGround()
     {
         //在地板上时更新速度
@@ -378,6 +464,7 @@ k);
         if (!isGrounded && rb.velocity.y < 0f) ChangeState(PlayerState.Fall);
     }
 
+    //切换jump的速度，若是y向速度变低切换到fall状态
     private void UpdateJump()
     {
         //更新跳状态，更新速度
@@ -386,14 +473,71 @@ k);
         if (rb.velocity.y <= 0) ChangeState(PlayerState.Fall);
     }
 
+    //更新fall速度，若是触地了切换到Ground状态
     private void UpdateFall()
     {
         //更新下落状态速度
         rb.velocity = new Vector2(horizontalMoveLastFrame * moveSpeed, rb.velocity.y);
         //触地了，切换到GroudState
-        if (isGrounded) ChangeState(PlayerState.Ground);
+        if (isGrounded)
+        {
+            ChangeState(PlayerState.Ground);
+            return;
+        }
+
+        //墙滑，下落中 且 按住向墙 且 射线命中
+        if (rb.velocity.y <= 0f)
+        {
+            wallSlide = GetWallSlide();
+            if (wallSlide != 0 && horizontalMoveLastFrame == wallSlide)
+            //if (wallSlide != 0)
+            {
+                ChangeState(PlayerState.WallSlide);
+            }
+        }
     }
 
+    //
+    private void UpdateWallSlide()
+    {
+        //Debug.Log($"inWallSlide, vy ={rb.velocity.y}, wallSide ={wallSlide}");
+        //每帧查有没有墙，没有就下去
+        wallSlide = GetWallSlide();
+        //水平锁0，下落到上限
+        rb.velocity = new Vector2(0f, MathF.Max(rb.velocity.y, wallSlideMaxFall));
+        //触地了就换到Groun
+        if (isGrounded)
+        {
+            ChangeState(PlayerState.Ground);
+            return;
+        }
+        //松开键 转向 没墙了 就转到fall
+        if (wallSlide == 0 || horizontalMoveLastFrame != wallSlide)
+        //if (wallSlide == 0)
+        {
+            ChangeState(PlayerState.Fall);
+        }
+    }
+
+    private void UpdateWallJump()
+    {
+        //强制walljump窗口内忽略输入，弹离结束后恢复空中操控
+        if (wallJumpForceTimer > 0f)
+        {
+            wallJumpForceTimer -= Time.deltaTime;
+            rb.velocity = new Vector2(wallJumpDir * wallJumpSpeed, rb.velocity.y);
+        }
+        //
+        else
+        {
+            rb.velocity = new Vector2(horizontalMoveLastFrame * moveSpeed, rb.velocity.y);
+            if (isGrounded) ChangeState(PlayerState.Ground);
+            else if (rb.velocity.y <= 0f) ChangeState(PlayerState.Fall);
+        }
+    }
+
+
+    //dash状态计时，更新dash速度，若是触地切换至fall，若是在空中，根据y向速度切换到jump/fall
     private void UpdateDash()
     {
         //stateTime在该函数里和dashTime比较，不写死方便后面其他需要计时的状态扩展
@@ -410,4 +554,8 @@ k);
             else ChangeState(rb.velocity.y > 0f ? PlayerState.Jump : PlayerState.Fall);
         }
     }
+
+
+
+
 }
