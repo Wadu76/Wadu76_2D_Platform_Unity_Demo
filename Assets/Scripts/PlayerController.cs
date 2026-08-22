@@ -35,7 +35,8 @@ public class PlayerController : MonoBehaviour
 
     //地面检测点
     [SerializeField]
-    public Transform groundCheck;
+    private Transform groundCheck;
+    [SerializeField] private Transform groundCheckRight;
     [SerializeField]
     private Transform wallCheckLeft;
     [SerializeField]
@@ -56,6 +57,7 @@ public class PlayerController : MonoBehaviour
     public float dashGhostInterval = 0.03f;     //残影生成间隔
     public float dashIFrame = 0.3f;     //无敌时长，默认和dash时长一致
     public bool dashBlink = true;      //无敌期间闪烁提示
+    [SerializeField] private int maxDashes = 1;
 
     [Header("滑墙&墙跳")]
     [SerializeField] private float wallJumpGraceTime = 0.12f;       //松朝向键后，墙跳还能跳的时长（缓冲
@@ -89,6 +91,7 @@ public class PlayerController : MonoBehaviour
     //public float moveX;
 
     //dash状态
+    private int dashes;
     private bool isDashing;
     private bool isInvincible;
     private Vector2 dashDirection;
@@ -112,6 +115,8 @@ public class PlayerController : MonoBehaviour
         ghost = GetComponentInChildren<GhostTrail>();
         platformPenetration = GetComponent<PlatformPenetration>();
         baseScale = visual.localScale;
+        dashes = maxDashes;
+
 
     }
 
@@ -161,7 +166,10 @@ public class PlayerController : MonoBehaviour
         UpdateGravity();
 
         //check if we're on the ground
-        isGrounded = Physics2D.OverlapCircle(groundCheck.position, groundCheckRadius, groundLayer);
+        //isGrounded = Physics2D.OverlapCircle(groundCheck.position, groundCheckRadius, groundLayer);
+        isGrounded = Physics2D.OverlapCircle(groundCheck.position, groundCheckRadius, groundLayer) || Physics2D.OverlapCircle(groundCheckRight.position, groundCheckRadius, groundLayer);
+        if (isGrounded) Debug.Log(isGrounded);
+        //地面检测:脚底一小段向下
 
         //土狼时间： 在地面就充满，离开就开始计时
         if (isGrounded) coyoteTimer = coyoteTime;
@@ -177,6 +185,8 @@ public class PlayerController : MonoBehaviour
         {
             wallJumpGraceTimer -= Time.deltaTime;
         }
+
+        if (currentState == PlayerState.Ground) dashes = maxDashes;
 
         if (!TryStartDash()) TryStartJump();
 
@@ -357,8 +367,11 @@ k);
         if (!dashPressed) return false;
         dashPressed = false;
         //尝试看是否要dash 看是否按了K，目前不能在dash状态，且dashcd要转好
-        if (currentState != PlayerState.Dash && dashCooldownTimer <= 0f)
+        //if (currentState != PlayerState.Dash && dashCooldownTimer <= 0f)
+        if (currentState != PlayerState.Dash && dashes > 0 &&
+  dashCooldownTimer <= 0f)
         {
+            dashes--;
             //满足便在此切换为dashState，返回true
             ChangeState(PlayerState.Dash);
             return true;
@@ -390,13 +403,22 @@ k);
         //第二种情况，墙跳：相邻有墙，按着朝墙方向才让跳
         wallSlide = GetWallSlide();
         //中间变量记录上次的wallSlide防止被消耗
-        int side = wallSlide != 0 ? wallSlide : lastWallSide;
-        if (side != 0 && (horizontalMoveLastFrame == side || wallJumpGraceTimer > 0f))
+        //int side = wallSlide != 0 ? wallSlide : lastWallSide;
+        //1 挨着墙:按住朝墙 或 宽容窗口内,都算
+        if (wallSlide != 0 && (horizontalMoveLastFrame == wallSlide || wallJumpGraceTimer > 0f))
         //if (wallSlide != 0)
         {
             //朝着扒墙的反方向跳出去
-            wallJumpDir = -side;
+            wallJumpDir = -wallSlide;
             wallJumpGraceTimer = 0f;    //消耗缓冲时间，防止连跳
+            ChangeState(PlayerState.WallJump);
+            return true;
+        }
+        //2已离墙:只有宽容窗口能救,不再允许"按住方向"判定(那会拿旧值误发)
+        else if (wallJumpGraceTimer > 0f && lastWallSide != 0)
+        {
+            wallJumpDir = -lastWallSide;
+            wallJumpGraceTimer = 0f;
             ChangeState(PlayerState.WallJump);
             return true;
         }
