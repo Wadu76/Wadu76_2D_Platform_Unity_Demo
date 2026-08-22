@@ -13,6 +13,7 @@ public class GhostTrail : MonoBehaviour
 
     void Awake()
     {
+        //玩家的visual sr
         sr = GetComponent<SpriteRenderer>();
     }
 
@@ -22,12 +23,13 @@ public class GhostTrail : MonoBehaviour
         GameObject ghost = new GameObject("Ghost");
         ghost.transform.position = transform.position;
         ghost.transform.rotation = transform.rotation;
-        ghost.transform.localScale = transform.localScale;  //残影继承本体的拉伸
+        ghost.transform.localScale = transform.localScale;  //残影继承本体的位置，旋转，拉伸
 
+        //再给ghost弄精灵图渲染组件
         SpriteRenderer g = ghost.AddComponent<SpriteRenderer>();
         g.sprite = sr.sprite;
         g.flipX = sr.flipX;
-        g.sortingOrder = sr.sortingOrder - 1; //压在玩家下面一层
+        g.sortingOrder = sr.sortingOrder - 1; //压在玩家visual下面一层
         g.color = ghostColor;
 
         StartCoroutine(FadeAndDestroy(ghost, g));
@@ -40,10 +42,12 @@ public class GhostTrail : MonoBehaviour
         while (t < ghostLifetime)
         {
             t += Time.deltaTime;
+            //根据ghost存活时间占比平滑让ghost透明
             g.color = new Color(start.r, start.g, start.b,
                                 Mathf.Lerp(start.a, 0f, t / ghostLifetime));
-            yield return null;
+            yield return null;  //逐帧渲染
         }
+        //最终摧毁ghost
         Destroy(ghost);
     }
 }

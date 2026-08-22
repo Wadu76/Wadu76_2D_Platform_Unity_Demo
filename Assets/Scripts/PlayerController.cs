@@ -1,14 +1,12 @@
 using System.Collections;
-//using System.Numerics;
-
-//using System.Numerics;
-
 using UnityEngine;
 
-[RequireComponent(typeof(Rigidbody2D))]
+enum PlayerState { Ground, Jump, Fall, Dash }
+
 public class PlayerController : MonoBehaviour
 {
-    public float horizontalMoveLastFrame;
+    private PlayerState currentState = PlayerState.Ground;      //状态机控制
+    public float horizontalMoveLastFrame;           //记录水平方向的最后一个输入（主要1 or -1）
     private SpriteRenderer sr;
     private Animator anim;
     public float moveSpeed = 5f;
@@ -20,15 +18,15 @@ public class PlayerController : MonoBehaviour
 
     //平时的基础重力
     [SerializeField]
-    public float baseGravity = 4f;
+    private float baseGravity = 4f;
 
     //上升时松开跳：重力×2.5，剪短上升
     [SerializeField]
-    public float jumpCutMultiplier = 2.5f;
+    private float jumpCutMultiplier = 2.5f;
 
     //下落时 重力x2.5, 下坠更快
     [SerializeField]
-    public float fallMutiplier = 2.5f;
+    private float fallMutiplier = 2.5f;
 
     private bool jumpHeld; //跳跃键是否还按着
 
@@ -51,6 +49,10 @@ public class PlayerController : MonoBehaviour
     public float dashGhostInterval = 0.03f;     //残影生成间隔
     public float dashIFrame = 0.3f;     //无敌时长，默认和dash时长一致
     public bool dashBlink = true;      //无敌期间闪烁提示
+
+    private bool dashPressed;   //Update里面采集判断要不要dash，一帧一次
+    private float invincibleTimer;
+    private float stateTime;    //当前状态计时（目前主要针对dash）
 
     public bool IsInvincible => isInvincible;
 
@@ -120,68 +122,41 @@ public class PlayerController : MonoBehaviour
             dashCooldownTimer -= Time.deltaTime;
         }
 
-        //触发冲刺 shift 且未在冲 且 冷却过了
-        if (Input.GetKeyDown(KeyCode.K) && !isDashing && dashCooldownTimer <= 0f)
+        //dashpressed根据是否消耗，是否按下进行累积而不是覆盖
+        dashPressed = Input.GetKeyDown(KeyCode.K) || dashPressed;
+        if (invincibleTimer > 0f)   //冷却在状态机里面判断
         {
-            StartCoroutine(DashRoutine());
+            invincibleTimer -= Time.deltaTime;
+            if (invincibleTimer <= 0f) isInvincible = false;
         }
 
     }
 
     void FixedUpdate()
     {
-        //dash重力优先于其他重力逻辑
-        if (isDashing)
-        {
-            rb.gravityScale = dashGravity;
-        }
-        //定这一帧的重力
-        else if (rb.velocity.y < 0f)
-        {
-            rb.gravityScale = baseGravity * fallMutiplier;    //下落：加倍
-        }
-        else if (rb.velocity.y > 0f && !jumpHeld)
-        {
-            rb.gravityScale = baseGravity * jumpCutMultiplier; //上升时松开空格，猛增重力剪短上升过程
-        }
-        else
-        {
-            rb.gravityScale = baseGravity;  //其余时间正常
-        }
+        UpdateGravity();
 
-
-        //check if we're on the fround
+        //check if we're on the ground
         isGrounded = Physics2D.OverlapCircle(groundCheck.position, groundCheckRadius, groundLayer);
 
         //土狼时间： 在地面就充满，离开就开始计时
         if (isGrounded) coyoteTimer = coyoteTime;
         else coyoteTimer -= Time.deltaTime;
 
+        if (!TryStartDash()) TryStartJump();
 
-        //此处的moveX处理移动速度
-        float moveX = horizontalMoveLastFrame;
-        if (isDashing)
+        switch (currentState)
         {
-            //冲刺：速度全方向接管，保证直线不飘
-            rb.velocity = dashDirection * dashSpeed;
-        }
-        else
-        {
-            // 关键：只改 X 速度，Y 速度原样保留（重力 / 以后的跳跃都靠它）
-            rb.velocity = new Vector2(moveX * moveSpeed, rb.velocity.y);
+            case PlayerState.Ground: UpdateGround(); break;
+            case PlayerState.Jump: UpdateJump(); break;
+            case PlayerState.Fall: UpdateFall(); break;
+            case PlayerState.Dash: UpdateDash(); break;
         }
 
-        //我们不再判断是否跳跃那一下的布尔值，把布尔值抽成连续的短时间缓冲池，放大判定
-        if (jumpBufferTimer > 0 && (isGrounded || coyoteTimer > 0f) && !isDashing)
-        {
-            rb.velocity = new Vector2(rb.velocity.x, jumpForce);
-            //anim.SetTrigger("Jump");
-            jumpBufferTimer = 0f;   //消耗缓冲
-            coyoteTimer = 0f;       //消耗土狼时间
-        }
         //jumpPressed = false;
         anim.SetBool("IsGrounded", isGrounded);
         anim.SetFloat("VelocityY", rb.velocity.y);
+        anim.SetBool("IsDashing", currentState == PlayerState.Dash);
     }
 
     void OptimizedInput()
@@ -251,18 +226,26 @@ public class PlayerController : MonoBehaviour
     //拉伸残影
     IEnumerator StretchRoutine()
     {
+        //拉伸部分，占dash的30%
         float stretchDuration = dashTime * 0.3f;
         float t = 0f;
         while (t < stretchDuration)
         {
             t += Time.deltaTime;
+            //将t/stretchDuration限制在01，作为插值系数
             float k = Mathf.Clamp01(t / stretchDuration);
+            //间接获取初始scale
             Vector3 s = baseScale;
+            //将间接scale根据dash持续时间系数变化
             s.x = baseScale.x * Mathf.Lerp(1f, 1f + dashStretch,
 k);
+            //计算完后同时将player的scale缩放
             visual.localScale = s;
+            //直到下一次update继续，以实现逐帧动画（可能有毫秒级别误差忽略不计）
             yield return null;
         }
+
+        //回缩过程 占dash的70%
         float relaxDuration = dashTime * 0.7f;
         t = 0f;
         while (t < relaxDuration)
@@ -270,6 +253,7 @@ k);
             t += Time.deltaTime;
             float k = Mathf.Clamp01(t / relaxDuration);
             Vector3 s = baseScale;
+            //1-dashStretch（1.35）
             s.x = baseScale.x * Mathf.Lerp(1f + dashStretch, 1f,
 k);
             visual.localScale = s;
@@ -278,15 +262,18 @@ k);
         visual.localScale = baseScale;
     }
 
+    //生成系列残影的协程
     IEnumerator GhostRoutine()
     {
+        //dash期间持续生成ghost残影
         while (isDashing)
         {
             if (ghost != null) ghost.SpawnGhost();
+            //残影生成有间隔 dashGhostInterval 
             yield return new WaitForSeconds(dashGhostInterval);
         }
     }
-
+    //展示无敌过程高亮协程
     IEnumerator BlinkRoutine()
     {
         while (isInvincible)
@@ -297,5 +284,130 @@ k);
             yield return new WaitForSeconds(0.1f);
         }
         sr.enabled = true;
+    }
+
+    private void UpdateGravity()
+    {
+        //更新重力
+        //dash重力优先于其他重力逻辑
+        if (currentState == PlayerState.Dash)
+        {
+            rb.gravityScale = dashGravity;
+        }
+        //定这一帧的重力
+        else if (rb.velocity.y < 0f)
+        {
+            rb.gravityScale = baseGravity * fallMutiplier;    //下落：加倍
+        }
+        else if (rb.velocity.y > 0f && !jumpHeld)
+        {
+            rb.gravityScale = baseGravity * jumpCutMultiplier; //上升时松开空格，猛增重力剪短上升过程
+        }
+        else
+        {
+            rb.gravityScale = baseGravity;  //其余时间正常
+        }
+    }
+
+    private bool TryStartDash()
+    {
+        //在此消耗update搜集的dashPressed
+        if (!dashPressed) return false;
+        dashPressed = false;
+        //尝试看是否要dash 看是否按了K，目前不能在dash状态，且dashcd要转好
+        if (currentState != PlayerState.Dash && dashCooldownTimer <= 0f)
+        {
+            //满足便在此切换为dashState，返回true
+            ChangeState(PlayerState.Dash);
+            return true;
+        }
+        //上述条件有一个不满足就返回本帧无法dash
+        return false;
+    }
+
+    private bool TryStartJump()
+    {
+        //jump与jumpbuffer和cotyoteTimer绑定，每次跳了后面会清0，因此靠这两判断能否跳
+        //当然dash过程无法切换到jump，要先”落地“才行
+        if (jumpBufferTimer > 0f && (isGrounded || coyoteTimer > 0f) && currentState != PlayerState.Dash)
+        {
+            //类比上面的tryDash
+            ChangeState(PlayerState.Jump);
+            return true;
+        }
+        return false;
+    }
+
+    // 用于把目前的PlayerState切到next
+    private void ChangeState(PlayerState next)
+    {
+        currentState = next;
+        //该变量目前仅针对dash
+        //由于每个状态都可能会切向dash，因此任何状态切换时将statetime置为0
+        //即当dash切换到该nextstate时，后续不会出cd问题
+        stateTime = 0f;     //重置当前状态持续时间
+
+        //要切换到跳时就把跳的状态重置，给玩家加上跳跃的力
+        if (next == PlayerState.Jump)
+        {
+            //执行跳逻辑
+            rb.velocity = new Vector2(rb.velocity.x, jumpForce);
+            jumpBufferTimer = 0f;   //消耗缓冲
+            coyoteTimer = 0f;       //消耗土狼
+        }
+        //要切换到dash时同样的重置其该配置的参数
+        else if (next == PlayerState.Dash)
+        {
+            isDashing = true;       //切换到dash自然正在dash
+            isInvincible = true;    //启动无敌
+            dashCooldownTimer = dashCooldown;   //置cd
+            dashDirection = GetDashDirection(); //获取dash方向用于计算dash速度矢量
+            anim.SetBool("IsDashing", true);    //设置动画的dash为true
+            //切换到dash状态自然开启其特效的coroutines
+            StartCoroutine(StretchRoutine());
+            StartCoroutine(GhostRoutine());
+            StartCoroutine(BlinkRoutine());
+        }
+    }
+
+    private void UpdateGround()
+    {
+        //在地板上时更新速度
+        rb.velocity = new Vector2(horizontalMoveLastFrame * moveSpeed, rb.velocity.y);
+        //当走出平台就切换到fallstate
+        if (!isGrounded && rb.velocity.y < 0f) ChangeState(PlayerState.Fall);
+    }
+
+    private void UpdateJump()
+    {
+        //更新跳状态，更新速度
+        rb.velocity = new Vector2(horizontalMoveLastFrame * moveSpeed, rb.velocity.y);
+        //当y向变为非正时切换为fall
+        if (rb.velocity.y <= 0) ChangeState(PlayerState.Fall);
+    }
+
+    private void UpdateFall()
+    {
+        //更新下落状态速度
+        rb.velocity = new Vector2(horizontalMoveLastFrame * moveSpeed, rb.velocity.y);
+        //触地了，切换到GroudState
+        if (isGrounded) ChangeState(PlayerState.Ground);
+    }
+
+    private void UpdateDash()
+    {
+        //stateTime在该函数里和dashTime比较，不写死方便后面其他需要计时的状态扩展
+        stateTime += Time.fixedDeltaTime;
+        rb.velocity = dashDirection * dashSpeed;
+        if (stateTime >= dashTime)
+        {
+            //持续时间超过dash该持续的时间了
+            isDashing = false;
+            anim.SetBool("IsDashing", false);
+            invincibleTimer = dashIFrame - dashTime;    //无敌延续
+            //dash结束，按落地/速度定新的状态
+            if (isGrounded) ChangeState(PlayerState.Ground);
+            else ChangeState(rb.velocity.y > 0f ? PlayerState.Jump : PlayerState.Fall);
+        }
     }
 }
