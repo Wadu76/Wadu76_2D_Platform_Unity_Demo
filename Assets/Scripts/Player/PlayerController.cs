@@ -104,7 +104,9 @@ public class PlayerController : MonoBehaviour
     private int wallSlide;      //哪一侧有墙：-1左/+1右/0无
     private int wallJumpDir;    //墙跳弹离方向（= -wallSlide）
     private int lastWallSide;   //离开的最后一个墙的方向 -1 or 1
+    private bool isDead;        //死亡中 不准输入，暂停物理
 
+    //[SerializeField] SpriteRenderer deathPic;
 
     void Start()
     {
@@ -116,12 +118,17 @@ public class PlayerController : MonoBehaviour
         platformPenetration = GetComponent<PlatformPenetration>();
         baseScale = visual.localScale;
         dashes = maxDashes;
-
+        if (!GameState.hasSpawnPoint)
+        {
+            GameState.spawnPoint = transform.position;
+            GameState.hasSpawnPoint = true;
+        }
 
     }
 
     void Update()
     {
+        if (isDead) return;     //死亡不跑输入
         OptimizedInput();
         if (Input.GetButtonDown("Jump"))
         {
@@ -163,12 +170,14 @@ public class PlayerController : MonoBehaviour
 
     void FixedUpdate()
     {
+        if (isDead) return;      //死亡不跑物理
         UpdateGravity();
 
         //check if we're on the ground
         //isGrounded = Physics2D.OverlapCircle(groundCheck.position, groundCheckRadius, groundLayer);
         isGrounded = Physics2D.OverlapCircle(groundCheck.position, groundCheckRadius, groundLayer) || Physics2D.OverlapCircle(groundCheckRight.position, groundCheckRadius, groundLayer);
-        if (isGrounded) Debug.Log(isGrounded);
+        //if (isGrounded) Debug.Log(isGrounded);
+        if (isDead) Debug.Log(isDead);
         //地面检测:脚底一小段向下
 
         //土狼时间： 在地面就充满，离开就开始计时
@@ -577,7 +586,76 @@ k);
         }
     }
 
+    public void TakeDamage()
+    {
+        if (isInvincible) return;    //dash无敌中不受伤害
+        if (isDead) return;      //已死亡不再受伤，防止反复触发
+        isDead = true;  //直接死
+        rb.velocity = Vector2.zero;
+        rb.gravityScale = 0f;       //身体悬空停住
+        StartCoroutine(DeathRoutine());
+    }
 
 
+    IEnumerator DeathRoutine()
+    {
+        //死亡表现 压扁缩小最后消失
+        float t = 0f;
+        while (t < 0.2f)
+        {
+            t += Time.deltaTime;
+            visual.localScale = baseScale * Mathf.Lerp(1f, 0.1f, t / 0.2f);
+            yield return null;
+        }
+        sr.enabled = false;
+        yield return new WaitForSeconds(0.3f);  //停顿
+        Respawn();
+    }
 
+    // 重生:复位位置/物理/状态机/缓冲/dash/视觉/场景可复位物
+    void Respawn()
+    {
+        //位置与物理
+        rb.position = GameState.spawnPoint;
+        rb.velocity = Vector2.zero;
+        rb.angularVelocity = 0f;
+        horizontalMoveLastFrame = 0f;   // 重生后不带前世输入
+        //状态机与缓冲
+        currentState = PlayerState.Ground;
+        isDashing = false;
+        isInvincible = false;
+        invincibleTimer = 0f;
+        jumpBufferTimer = 0f;
+        coyoteTimer = 0f;
+        wallJumpGraceTimer = 0f;
+        wallJumpForceTimer = 0f;
+        dashes = maxDashes;
+        //视觉
+        sr.enabled = true;
+        visual.localScale = Vector3.zero;   //
+        StartCoroutine(SpawnPop());
+        anim.SetBool("IsDashing", false);
+        anim.SetBool("IsWallSliding", false);
+        //场景可复位物(坠落平台下一步实现,现在先留遍历)
+        foreach (MonoBehaviour mb in FindObjectsOfType<MonoBehaviour>())
+            if (mb is IResettable r) r.ResetLevelObject();
+        //复活(放最后,顺序别乱)
+        isDead = false;
+    }
+
+    //出生弹入:0 → 1.2 过冲 → 1(纯代码,配合死亡压扁很自然)
+    IEnumerator SpawnPop()
+    {
+        float t = 0f;
+        while (t < 0.25f)
+        {
+            t += Time.deltaTime;
+            float s = (t < 0.15f)
+                ? Mathf.Lerp(0f, 1.2f, t / 0.15f)          // 弹起
+                : Mathf.Lerp(1.2f, 1f, (t - 0.15f) / 0.10f); // 回落
+            visual.localScale = baseScale * s;
+            yield return null;
+        }
+        visual.localScale = baseScale;
+    }
 }
