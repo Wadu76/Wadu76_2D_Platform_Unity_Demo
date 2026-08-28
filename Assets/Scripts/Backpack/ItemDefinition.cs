@@ -11,7 +11,7 @@ public class ItemDefinition : ScriptableObject, IItemEffect
     [SerializeField] private float moveSpeedMul = 1f;
     [SerializeField] private float jumpForceMul = 1f;
     [SerializeField] private float gravityMul = 1f;
-    [SerializeField] private int dashBouns = 0;
+    [SerializeField] private int dashBonus = 0;
 
     //接口数据契约 need to be public
     public string ItemId => itemId;
@@ -20,7 +20,7 @@ public class ItemDefinition : ScriptableObject, IItemEffect
     public float MoveSpeedMul => moveSpeedMul;
     public float JumpForceMul => jumpForceMul;
     public float GravityMul => gravityMul;
-    public int DashBonus => dashBouns;
+    public int DashBonus => dashBonus;
 
     //行为钩 以后可以播音效/特效
     public void Apply(PlayerController player) { }

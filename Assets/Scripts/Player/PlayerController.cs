@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 
 enum PlayerState { Ground, Jump, Fall, Dash, WallSlide, WallJump }
@@ -22,7 +23,9 @@ public class PlayerController : MonoBehaviour
     //平时的基础重力
     [SerializeField]
     private float baseGravity = 4f;
-
+    [SerializeField]
+    private PlayerStats baseStats;  //玩家基础参数SO
+    private readonly List<IItemEffect> activeEffects = new();   //当前已装备的效果
     //上升时松开跳：重力×2.5，剪短上升
     [SerializeField]
     private float jumpCutMultiplier = 2.5f;
@@ -123,6 +126,7 @@ public class PlayerController : MonoBehaviour
             GameState.spawnPoint = transform.position;
             GameState.hasSpawnPoint = true;
         }
+        RecalculateStats();
 
     }
 
@@ -658,4 +662,53 @@ k);
         }
         visual.localScale = baseScale;
     }
+
+    //装备效果
+    //加到列表里触发重算（面向接口不关心是Item/buff）
+    public void ApplyEffect(IItemEffect effect)
+    {
+        activeEffects.Add(effect);
+        effect.Apply(this);
+        RecalculateStats();
+    }
+
+    //卸下效果，按照itemId移除 + 重算
+    public void RemoveEffect(string itemId)
+    {
+        for (int i = activeEffects.Count - 1; i >= 0; i--)
+        {
+            if (activeEffects[i].ItemId == itemId)
+            {
+                activeEffects[i].Remove(this);  //
+                activeEffects.RemoveAt(i);
+            }
+        }
+        RecalculateStats();
+    }
+
+    public bool HasEffect(string itemId)
+    {
+        foreach (var e in activeEffects) if (e.ItemId == itemId) return true;
+        return false;
+
+    }
+
+    //从基础SO重算当前参数，每个已装备效果的修改器乘法叠加
+    private void RecalculateStats()
+    {
+        moveSpeed = baseStats.moveSpeed;
+        jumpForce = baseStats.jumpForce;
+        baseGravity = baseStats.baseGravity;
+        maxDashes = baseStats.maxDashes;
+
+        foreach (IItemEffect e in activeEffects)
+        {
+            moveSpeed *= e.MoveSpeedMul;
+            jumpForce *= e.JumpForceMul;
+            baseGravity *= e.GravityMul;
+            maxDashes += e.DashBonus;
+        }
+        if (maxDashes < 1) maxDashes = 1;
+    }
+
 }
